@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\Student\ResultsController;
+use App\Http\Controllers\Teacher\ResultsController as TeacherResultsController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -18,8 +19,17 @@ Route::middleware(['auth'])
 
     // andere studentenroutes zoals profile, courses, grades, etc.
     // Route::get('courses', [CourseController::class, 'index'])->name('courses');
-
 });//hier eindigt de groep
+
+Route::prefix('teacher')
+    ->name('teacher.')
+    ->group(function () {
+        Route::get('results', [TeacherResultsController::class, 'index'])
+            ->name('results');
+});
+
+
+
 
 Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');

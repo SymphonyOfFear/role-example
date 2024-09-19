@@ -1,6 +1,37 @@
 # Rollen in Laravel
 
-Dit is een eenvoudig project om te demonstreren hoe je rollen kunt gebruiken in Laravel. We zullen een eenvoudig results maken met twee rollen: admin en gebruiker.
+Dit is een eenvoudig project om te demonstreren hoe je rollen kunt gebruiken in Laravel. We zullen een eenvoudig results maken met twee rollen: teacher en student.
+
+## Inhoudsopgave
+
+-   [Rollen in Laravel](#rollen-in-laravel)
+    -   [Inhoudsopgave](#inhoudsopgave)
+    -   [Aan de slag](#aan-de-slag)
+        -   [ResultsController](#resultscontroller)
+        -   [Route](#route)
+        -   [Index Methode](#index-methode)
+        -   [Results View](#results-view)
+        -   [Navigatie aanpassen](#navigatie-aanpassen)
+        -   [Route Groep](#route-groep)
+            -   [Prefix](#prefix)
+            -   [Name](#name)
+        -   [Verwijderen standaard Dashboard](#verwijderen-standaard-dashboard)
+        -   [Route verwijderen](#route-verwijderen)
+    -   [Standaard Redirect](#standaard-redirect)
+    -   [Role Model](#role-model)
+    -   [Registreer gebruiker](#registreer-gebruiker)
+        -   [Teacher Controller](#teacher-controller)
+        -   [Teacher methode](#teacher-methode)
+        -   [Teacher View](#teacher-view)
+        -   [Teacher Route](#teacher-route)
+    -   [Layouts aanpassen](#layouts-aanpassen)
+        -   [Student Layout](#student-layout)
+        -   [Student View Aanpassen](#student-view-aanpassen)
+            -   [Student Navigatie](#student-navigatie)
+    -   [Teacher Layout](#teacher-layout)
+        -   [Teacher View Aanpassen](#teacher-view-aanpassen)
+            -   [Teacher Navigatie](#teacher-navigatie)
+    -   [Redirect op basis van rol](#redirect-op-basis-van-rol)
 
 ## Aan de slag
 
@@ -80,16 +111,16 @@ We zetten onderstaande code erin
 <x-app-layout>
     <x-slot name="header">
         <h2
-            class="font-semibold text-xl text-gray-800 dark:text-gray-200 leading-tight"
+            class="text-xl font-semibold leading-tight text-gray-800 dark:text-gray-200"
         >
             {{ __('Resultaten overzicht') }}
         </h2>
     </x-slot>
 
     <div class="py-12">
-        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+        <div class="mx-auto max-w-7xl sm:px-6 lg:px-8">
             <div
-                class="bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg"
+                class="overflow-hidden bg-white shadow-sm dark:bg-gray-800 sm:rounded-lg"
             >
                 <div class="p-6 text-gray-900 dark:text-gray-100">
                     {{ __('Resultaten overzicht komt hier te staan') }}
@@ -250,12 +281,17 @@ class RegisteredUserController extends Controller
 
 Nu kunnen we ook de standaard dashboard view verwijderen: `resources/views/dashboard.blade.php`
 
-## Rollen
+## Role Model
 
 We gaan nu rollen toevoegen. We maken een nieuw model `Role` aan en de migratie:
 
 ```bash
 php artisan make:model Role -m
+```
+
+En daarna voegen we een kolom toe aan de tabel `users`:
+
+```bash
 php artisan make:migration "add role id to users table"
 ```
 
@@ -317,13 +353,443 @@ class DatabaseSeeder extends Seeder
 {
     public function run()
     {
-         User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
-        ]);
-
         Role::create(['name' => 'student']);
         Role::create(['name' => 'teacher']);
+
+        User::factory()->create([
+            'name' => 'Student Student',
+            'email' => 'student@novacollege.nl',
+            'role_id' => 1,
+        ]);
     }
 }
+```
+
+En dan bouwen de dataase opnieuw op:
+
+```bash
+php artisan migrate:fresh --seed
+```
+
+## Registreer gebruiker
+
+We registreren een gebruiker via de route `register`. We dienen ook een rol op te geven bij het aanmaken van een gebruiker.
+We dienen de volgende html code toe te voegen aan de view `resources/views/auth/register.blade.php`:
+
+```html
+<!-- Role -->
+<div class="mt-4">
+    <x-input-label for="role_id" :value="__('Register as:')" />
+
+    <label>
+        <input type="radio" name="role_id" value="1" checked /> Student
+    </label>
+    <label class="ml-2">
+        <input type="radio" name="role_id" value="2" /> Teacher
+    </label>
+
+    <x-input-error :messages="$errors->get('role_id')" class="mt-2" />
+</div>
+```
+
+En we passen de `RegisteredUserController` aan:
+
+```php
+class RegisteredUserController extends Controller
+{
+    // ...
+
+    public function store(Request $request): RedirectResponse
+    {
+        $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:'.User::class],
+            'password' => ['required', 'confirmed', Rules\Password::defaults()],
+
+            //hier wordt de rol verplicht
+            'role_id' => ['required', 'in:1,2'],
+        ]);
+
+        $user = User::create([
+            'name' => $request->name,
+            'email' => $request->email,
+            'password' => Hash::make($request->password),
+
+            //hier wordt de rol opgeslagen
+            'role_id' => $request->role_id,
+        ]);
+
+        event(new Registered($user));
+
+        Auth::login($user);
+
+        return redirect(route('student.results', absolute: false));
+    }
+}
+```
+
+Opmerking: voor de validatie gebruiken we de in validatieregel `in` plaats van `exists`, omdat we ons alleen kunnen registreren met deze twee rollen. We willen dat gebruikers zich niet registreren met een admin-rol.
+
+Na het registreren met de rol van docent zien we in de database dat de juiste rol is ingesteld.
+
+Maar nu komt de docent nog steeds in het studenten gedeelte terecht. Dit gaan we fixen.
+
+### Teacher Controller
+
+We maken een nieuwe controller voor de docenten:
+
+```bash
+php artisan make:controller Teacher/ResultsController
+```
+
+### Teacher methode
+
+We voegen een methode toe aan de `TeacherResultsController`:
+
+```php
+public function index()
+{
+    return view('teacher.results');
+}
+```
+
+### Teacher View
+
+We maken een nieuwe view voor de docenten:
+
+```bash
+php artisan make:view teacher/results
+```
+
+We passen de view aan:
+
+```html
+<x-app-layout>
+    <x-slot name="header">
+        <h2
+            class="text-xl font-semibold leading-tight text-gray-800 dark:text-gray-200"
+        >
+            {{ __('Overzicht voor Docent') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="mx-auto max-w-7xl sm:px-6 lg:px-8">
+            <div
+                class="overflow-hidden bg-white shadow-sm dark:bg-gray-800 sm:rounded-lg"
+            >
+                <div class="p-6 text-gray-900 dark:text-gray-100">
+                    {{ __("Overzicht voor Docent") }}
+                </div>
+            </div>
+        </div>
+    </div>
+</x-app-layout>
+```
+
+### Teacher Route
+
+We voegen een nieuwe route toe voor de docenten. Maar we hebben al een ResultsController. We geven deze nieuwe ResultsController een alias: TeacherResultsController.
+
+```php
+use App\Http\Controllers\Teacher\ResultsController as TeacherResultsController;
+
+//..
+    Route::prefix('teacher')
+        ->name('teacher.')
+        ->group(function () {
+            Route::get('results', [TeacherResultsController::class, 'index'])
+                ->name('results');
+    });
+```
+
+Als je nu gaat naar `/teacher/results` dan zie je de view voor de docenten.
+
+## Layouts aanpassen
+
+We kunnen de layouts aanpassen voor de docenten en studenten. Zodat elke rol zijn eigen layout heeft.
+
+Laravel maakt gebruikt van `Components`. We maken voor iedere rol een `Layout Component` zodat we de juiste layout kunnen tonen.
+
+### Student Layout
+
+```bash
+php artisan make:component StudentLayout
+```
+
+We passen de `StudentLayout` aan:
+
+```php
+use Illuminate\View\View;
+use Illuminate\View\Component;
+
+class StudentLayout extends Component
+{
+    /**
+     * Get the view / contents that represent the component.
+     */
+    public function render(): View|Closure|string
+    {
+        return view('layouts.student');
+    }
+}
+```
+
+En we **verplaatsen** én **hernoemen** de aangemaakte layout in de components map: `resources/views/components/student-layout.blade.php` naar `resources/views/layouts/student.blade.php`
+
+Als we dat gedaan hebben passen we de view van de layout inhoudelijk aan:
+
+```html
+<!DOCTYPE html>
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="csrf-token" content="{{ csrf_token() }}" />
+
+        <title>{{ config('app.name', 'Laravel') }}</title>
+
+        <!-- Fonts -->
+        <link rel="preconnect" href="https://fonts.bunny.net" />
+        <link
+            href="https://fonts.bunny.net/css?family=figtree:400,500,600&display=swap"
+            rel="stylesheet"
+        />
+
+        <!-- Scripts -->
+        @vite(['resources/css/app.css', 'resources/js/app.js'])
+    </head>
+    <body class="font-sans antialiased">
+        <div class="min-h-screen bg-gray-100">
+            @include('layouts.navigation.student')
+
+            <!-- Page Content -->
+            <main>{{ $slot }}</main>
+        </div>
+    </body>
+</html>
+```
+
+### Student View Aanpassen
+
+Daarna passen we de student results view aan (is momenteel identiek aan de app layout):
+
+```html
+<x-student-layout>
+    <x-slot name="header">
+        <h2
+            class="text-xl font-semibold leading-tight text-gray-800 dark:text-gray-200"
+        >
+            {{ __('Resultaten overzicht') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="mx-auto max-w-7xl sm:px-6 lg:px-8">
+            <div
+                class="overflow-hidden bg-white shadow-sm dark:bg-gray-800 sm:rounded-lg"
+            >
+                <div class="p-6 text-gray-900 dark:text-gray-100">
+                    {{ __('Resultaten overzicht komt hier te staan') }}
+                </div>
+            </div>
+        </div>
+    </div>
+</x-student-layout>
+```
+
+#### Student Navigatie
+
+De navigatie moet ook nog aangepast worden. We maken een nieuwe navigatie voor de studenten:
+
+```bash
+php artisan make:view layouts/navigation/student
+```
+
+En passen de view aan door de content van de navigatie uit `layouts/navigation.blade.php` te verplaatsen naar de nieuwe view. En een link toe te voegen naar de student results:
+
+```html
+<x-nav-link
+    :href="route('student.results')"
+    :active="request()->routeIs('student.results')"
+>
+    {{ __('Resultaten overzicht') }}
+</x-nav-link>
+```
+
+## Teacher Layout
+
+We maken ook voor de docenten een layout component:
+
+```bash
+php artisan make:component TeacherLayout
+```
+
+We passen de `TeacherLayout` aan in de map `View/Components`:
+
+```php
+use Illuminate\View\View;
+use Illuminate\View\Component;
+
+class TeacherLayout extends Component
+{
+    /**
+     * Get the view / contents that represent the component.
+     */
+    public function render(): View|Closure|string
+    {
+        return view('layouts.teacher');
+    }
+}
+```
+
+En we **verplaatsen** én **hernoemen** de aangemaakte layout in de components map: `resources/views/components/teacher-layout.blade.php` naar `resources/views/layouts/teacher.blade.php`
+
+Als we dat gedaan hebben passen we de view van de layout inhoudelijk aan:
+
+```html
+<!DOCTYPE html>
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="csrf-token" content="{{ csrf_token() }}" />
+
+        <title>{{ config('app.name', 'Laravel') }}</title>
+
+        <!-- Fonts -->
+        <link rel="preconnect" href="https://fonts.bunny.net" />
+        <link
+            href="https://fonts.bunny.net/css?family=figtree:400,500,600&display=swap"
+            rel="stylesheet"
+        />
+
+        <!-- Scripts -->
+        @vite(['resources/css/app.css', 'resources/js/app.js'])
+    </head>
+    <body class="font-sans antialiased">
+        <div class="min-h-screen bg-gray-100">
+            @include('layouts.navigation.teacher')
+
+            <!-- Page Content -->
+            <main>{{ $slot }}</main>
+        </div>
+    </body>
+</html>
+```
+
+### Teacher View Aanpassen
+
+Daarna passen we de teacher results view aan door de `<x-app-layout>` te vervangen door `<x-teacher-layout>`:
+
+```html
+<x-teacher-layout>
+    <x-slot name="header">
+        <h2
+            class="text-xl font-semibold leading-tight text-gray-800 dark:text-gray-200"
+        >
+            {{ __('Resultaten overzicht') }}
+        </h2>
+    </x-slot>
+
+    <div class="py-12">
+        <div class="mx-auto max-w-7xl sm:px-6 lg:px-8">
+            <div
+                class="overflow-hidden bg-white shadow-sm dark:bg-gray-800 sm:rounded-lg"
+            >
+                <div class="p-6 text-gray-900 dark:text-gray-100">
+                    {{ __('Resultaten overzicht komt hier te staan') }}
+                </div>
+            </div>
+        </div>
+    </div>
+</x-teacher-layout>
+```
+
+#### Teacher Navigatie
+
+Voor de docenten maken we een nieuwe navigatie:
+
+```bash
+php artisan make:view layouts/navigation/teacher
+```
+
+En passen de view aan door de content van de navigatie uit `layouts/navigation.blade.php` te verplaatsen naar de nieuwe view. En een link toe te voegen naar de teacher results:
+
+```html
+<x-nav-link
+    :href="route('teacher.results')"
+    :active="request()->routeIs('teacher.results')"
+>
+    {{ __('Docenten Resultaten overzicht') }}
+</x-nav-link>
+```
+
+## Redirect op basis van rol
+
+Na het inloggen en registreren willen we de gebruiker doorsturen naar de juiste pagina. We passen de `AuthenticatedSessionController` aan door een methode toe te voegen die de juiste route teruggeeft:
+
+```php
+    public function getRedirectRouteName(): string
+    {
+        return match ((int) $this->role_id) {
+            1 => 'student.timetable',
+            2 => 'teacher.timetable',
+        };
+    }
+```
+
+In de AuthenticatedSessionController passen we de store methode aan:
+
+```php
+    public function store(LoginRequest $request): RedirectResponse
+    {
+        $request->authenticate();
+
+        $request->session()->regenerate();
+
+        // return redirect()->intended(route('student.timetable', absolute: false));
+        return redirect()->intended(route(auth()->user()->getRedirectRouteName(), absolute: false));
+    }
+```
+
+En in de RegisteredUserController passen we de store methode aan:
+
+```php
+    public function store(Request $request): RedirectResponse
+    {
+        // ...
+
+        // return redirect(route('student.timetable', absolute: false));
+        return redirect(route(auth()->user()->getRedirectRouteName(), absolute: false));
+    }
+```
+
+Na het inloggen of registreren wordt de gebruiker nu doorgestuurd naar de juiste pagina op basis van de rol.
+
+Maar als iemand de url kent dan kan hij nog steeds naar de andere pagina gaan. We kunnen dit voorkomen door een middleware toe te voegen.
+
+```bash
+php artisan make:middleware RoleMiddleware
+```
+
+We passen de middleware aan:
+
+```php
+    public function handle(Request $request, Closure $next, int $roleId): Response
+    {
+        abort_if(auth()->user()->role_id !== $roleId, Response::HTTP_FORBIDDEN);
+
+        return $next($request);
+    }
+```
+
+We registereren de Middleware in het bestand bootstrap/app.php:
+
+```php
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->alias([
+            'role' => \App\Http\Middleware\RoleMiddleware::class,
+        ]);
+    })
 ```
